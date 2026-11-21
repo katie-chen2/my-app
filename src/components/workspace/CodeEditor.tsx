@@ -9,7 +9,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Check, Copy, FileCode2, RotateCcw, Wand2 } from 'lucide-react'
+import { Check, Copy, FileCode2, GitCompareArrows, RotateCcw, Wand2 } from 'lucide-react'
 import {
   Badge,
   Button,
@@ -24,6 +24,8 @@ import {
   useToast,
 } from '@/components/ui'
 import { cn } from '@/lib/utils'
+import { DiffView } from './DiffView'
+import type { CodeProposal } from './diff'
 
 export const LANGUAGES = [
   { value: 'typescript', label: 'TypeScript' },
@@ -63,6 +65,16 @@ interface CodeEditorProps {
   busy?: boolean
   /** Called when the user asks the agent to review the current buffer. */
   onAskAgent: () => void
+  /**
+   * A change the agent proposed, awaiting the user's decision. While this is
+   * set the pane shows a diff instead of the textarea — the buffer is never
+   * overwritten without an explicit accept.
+   */
+  proposal?: CodeProposal | null
+  onAcceptProposal?: (code: string) => void
+  onRejectProposal?: () => void
+  /** Re-diff the pending proposal against the buffer as it stands now. */
+  onRebaseProposal?: () => void
   className?: string
 }
 
@@ -73,6 +85,10 @@ export function CodeEditor({
   onLanguageChange,
   busy = false,
   onAskAgent,
+  proposal = null,
+  onAcceptProposal,
+  onRejectProposal,
+  onRebaseProposal,
   className,
 }: CodeEditorProps) {
   const { success } = useToast()
@@ -135,9 +151,16 @@ export function CodeEditor({
       <header className="flex flex-wrap items-center gap-2 border-b border-border px-3 py-2">
         <FileCode2 className="size-4 shrink-0 text-muted-foreground" aria-hidden />
         <h2 className="text-sm font-medium text-foreground">Editor</h2>
-        <Badge variant="secondary" size="sm">
-          {lineCount} {lineCount === 1 ? 'line' : 'lines'}
-        </Badge>
+        {proposal ? (
+          <Badge variant="info" size="sm" data-testid="editor-review-badge">
+            <GitCompareArrows className="mr-1 size-3" aria-hidden />
+            Reviewing
+          </Badge>
+        ) : (
+          <Badge variant="secondary" size="sm">
+            {lineCount} {lineCount === 1 ? 'line' : 'lines'}
+          </Badge>
+        )}
 
         <div className="ml-auto flex items-center gap-2">
           <Select value={language} onValueChange={(next) => onLanguageChange(next as Language)}>
@@ -153,87 +176,106 @@ export function CodeEditor({
             </SelectContent>
           </Select>
 
-          <Tooltip>
-            <TooltipTrigger
-              render={
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={onAskAgent}
-                  disabled={busy || !value.trim()}
-                >
-                  <Wand2 aria-hidden />
-                  Review
-                </Button>
-              }
-            />
-            <TooltipContent>Ask the agent to review this code</TooltipContent>
-          </Tooltip>
+          {proposal ? (
+            <Button variant="outline" size="sm" onClick={onRejectProposal}>
+              Back to editor
+            </Button>
+          ) : (
+            <>
+              <Tooltip>
+                <TooltipTrigger
+                  render={
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={onAskAgent}
+                      disabled={busy || !value.trim()}
+                    >
+                      <Wand2 aria-hidden />
+                      Review
+                    </Button>
+                  }
+                />
+                <TooltipContent>Ask the agent to review this code</TooltipContent>
+              </Tooltip>
 
-          <Tooltip>
-            <TooltipTrigger
-              render={
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="size-8"
-                  onClick={handleCopy}
-                  aria-label="Copy code"
-                >
-                  {copied ? <Check aria-hidden /> : <Copy aria-hidden />}
-                </Button>
-              }
-            />
-            <TooltipContent>Copy to clipboard</TooltipContent>
-          </Tooltip>
+              <Tooltip>
+                <TooltipTrigger
+                  render={
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="size-8"
+                      onClick={handleCopy}
+                      aria-label="Copy code"
+                    >
+                      {copied ? <Check aria-hidden /> : <Copy aria-hidden />}
+                    </Button>
+                  }
+                />
+                <TooltipContent>Copy to clipboard</TooltipContent>
+              </Tooltip>
 
-          <Tooltip>
-            <TooltipTrigger
-              render={
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="size-8"
-                  onClick={() => onChange(STARTER_CODE)}
-                  aria-label="Reset editor"
-                >
-                  <RotateCcw aria-hidden />
-                </Button>
-              }
-            />
-            <TooltipContent>Reset to the starter snippet</TooltipContent>
-          </Tooltip>
+              <Tooltip>
+                <TooltipTrigger
+                  render={
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="size-8"
+                      onClick={() => onChange(STARTER_CODE)}
+                      aria-label="Reset editor"
+                    >
+                      <RotateCcw aria-hidden />
+                    </Button>
+                  }
+                />
+                <TooltipContent>Reset to the starter snippet</TooltipContent>
+              </Tooltip>
+            </>
+          )}
         </div>
       </header>
 
-      <div className="flex min-h-0 flex-1 overflow-hidden">
-        <div
-          ref={gutterRef}
-          aria-hidden
-          className="w-12 shrink-0 select-none overflow-hidden border-r border-border bg-card/40 py-3 text-right font-mono text-xs leading-6 text-muted-foreground/60"
-        >
-          {lineNumbers.map((line) => (
-            <div key={line} className="pr-2">
-              {line}
-            </div>
-          ))}
-        </div>
-
-        <textarea
-          ref={textareaRef}
-          data-testid="code-editor-input"
-          aria-label="Code"
-          spellCheck={false}
-          autoCapitalize="off"
-          autoCorrect="off"
-          value={value}
-          onChange={(event) => onChange(event.target.value)}
-          onKeyDown={handleKeyDown}
-          onScroll={syncScroll}
-          placeholder="Paste code here…"
-          className="min-h-0 flex-1 resize-none bg-transparent px-3 py-3 font-mono text-xs leading-6 text-foreground outline-none placeholder:text-muted-foreground/60"
+      {proposal ? (
+        <DiffView
+          key={proposal.id}
+          proposal={proposal}
+          currentCode={value}
+          onAccept={(next) => onAcceptProposal?.(next)}
+          onReject={() => onRejectProposal?.()}
+          onRebase={() => onRebaseProposal?.()}
         />
-      </div>
+      ) : (
+        <div className="flex min-h-0 flex-1 overflow-hidden">
+          <div
+            ref={gutterRef}
+            aria-hidden
+            className="w-12 shrink-0 select-none overflow-hidden border-r border-border bg-card/40 py-3 text-right font-mono text-xs leading-6 text-muted-foreground/60"
+          >
+            {lineNumbers.map((line) => (
+              <div key={line} className="pr-2">
+                {line}
+              </div>
+            ))}
+          </div>
+
+          <textarea
+            ref={textareaRef}
+            data-testid="code-editor-input"
+            aria-label="Code"
+            spellCheck={false}
+            autoCapitalize="off"
+            autoCorrect="off"
+            value={value}
+            onChange={(event) => onChange(event.target.value)}
+            onKeyDown={handleKeyDown}
+            onScroll={syncScroll}
+            placeholder="Paste code here…"
+            className="min-h-0 flex-1 resize-none bg-transparent px-3 py-3 font-mono text-xs leading-6 text-foreground outline-none placeholder:text-muted-foreground/60"
+          />
+        </div>
+      )}
     </section>
   )
 }

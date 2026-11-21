@@ -18,9 +18,15 @@ import { decodeAiStreamChunk, getAuthToken, parseSseLine, type AiStreamAction } 
 export const EDITOR_CONTEXT_MARKER = '<<<EDITOR_CONTEXT>>>'
 
 /** Compose the wire payload: the user's words plus the current editor buffer. */
-export function composeUserContent(message: string, code: string, language: string): string {
+export function composeUserContent(
+  message: string,
+  code: string,
+  language: string,
+  manualEdits?: string | null,
+): string {
   if (!code.trim()) return message
-  return [
+
+  const parts = [
     message,
     '',
     EDITOR_CONTEXT_MARKER,
@@ -28,7 +34,23 @@ export function composeUserContent(message: string, code: string, language: stri
     '```' + language,
     code,
     '```',
-  ].join('\n')
+  ]
+
+  // The buffer moved on after the agent last saw it — the user edited it by
+  // hand, accepted part of a previous suggestion, or both. Say so explicitly,
+  // with the diff, so the model preserves those changes instead of
+  // regenerating from its own previous output and reverting them.
+  if (manualEdits) {
+    parts.push(
+      '',
+      'The file changed after your last reply. The user edited it by hand and/or accepted part of your previous suggestion. These changes are current — preserve them unless the user asks you to undo them:',
+      '```diff',
+      manualEdits,
+      '```',
+    )
+  }
+
+  return parts.join('\n')
 }
 
 /** Split a persisted user message back into display text + context flag. */

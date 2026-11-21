@@ -105,7 +105,19 @@ interface AgentChatProps {
   /** Current editor buffer, sent along with every message. */
   code: string
   language: string
-  onApplyCode: (code: string) => void
+  /**
+   * Hand a fenced code block to the editor as a *proposal* — the editor shows
+   * it as a diff and the user decides what to keep. Never writes directly.
+   */
+  onProposeCode: (code: string, language?: string) => void
+  /**
+   * Returns a diff of the user's hand edits since the agent last saw the
+   * buffer, or null when there are none. Called at send time so the diff is
+   * computed once per turn rather than on every keystroke.
+   */
+  getManualEdits: () => string | null
+  /** Fires when a turn is sent, with the buffer the agent is about to see. */
+  onTurnSent: (code: string) => void
   onStreamingChange: (streaming: boolean) => void
   className?: string
 }
@@ -117,7 +129,9 @@ export function AgentChat({
   onDraftChange,
   code,
   language,
-  onApplyCode,
+  onProposeCode,
+  getManualEdits,
+  onTurnSent,
   onStreamingChange,
   className,
 }: AgentChatProps) {
@@ -201,7 +215,8 @@ export function AgentChat({
       onDraftChange('')
       lastSentRef.current = message
 
-      const content = composeUserContent(message, code, language)
+      const content = composeUserContent(message, code, language, getManualEdits())
+      onTurnSent(code)
       const userMessageId = `umsg-${crypto.randomUUID()}`
       const assistantPlaceholderId = `local-asst-${crypto.randomUUID()}`
 
@@ -306,7 +321,18 @@ export function AgentChat({
         setStreaming(false)
       }
     },
-    [chatId, code, language, modelId, onDraftChange, patchAssistant, streaming, toastError],
+    [
+      chatId,
+      code,
+      getManualEdits,
+      language,
+      modelId,
+      onDraftChange,
+      onTurnSent,
+      patchAssistant,
+      streaming,
+      toastError,
+    ],
   )
 
   const stop = useCallback(() => {
@@ -440,7 +466,7 @@ export function AgentChat({
               <MessageRow
                 key={message.id}
                 message={message}
-                onApplyCode={onApplyCode}
+                onProposeCode={onProposeCode}
               />
             ))}
           </ul>
@@ -525,10 +551,10 @@ export function AgentChat({
 
 function MessageRow({
   message,
-  onApplyCode,
+  onProposeCode,
 }: {
   message: ChatMessage
-  onApplyCode: (code: string) => void
+  onProposeCode: (code: string, language?: string) => void
 }) {
   const isUser = message.role === 'user'
   const display = isUser ? splitUserContent(message.content) : null
@@ -583,9 +609,9 @@ function MessageRow({
                       variant="ghost"
                       size="sm"
                       className="h-6 px-2 text-[11px]"
-                      onClick={() => onApplyCode(segment.value)}
+                      onClick={() => onProposeCode(segment.value, segment.lang)}
                     >
-                      Apply to editor
+                      Review changes
                     </Button>
                   </div>
                   <pre className="max-h-72 overflow-auto bg-background px-2 py-2 font-mono text-[11px] leading-5">
