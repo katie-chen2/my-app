@@ -10,7 +10,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { listDeepSpaceAgentModels, useQuery } from 'deepspace'
-import { AlertTriangle, ArrowUp, Coins, Loader2, Plus, Sparkles, Square, Trash2 } from 'lucide-react'
+import { AlertTriangle, ArrowUp, AtSign, Coins, Loader2, Plus, Sparkles, Square, Trash2, X } from 'lucide-react'
 import {
   Badge,
   Button,
@@ -35,6 +35,8 @@ import {
   splitUserContent,
   streamTurn,
 } from './chat-client'
+import { MentionPicker, findMentionQuery } from './MentionPicker'
+import type { Mention } from './mentions'
 
 interface AiMessageData {
   chatId: string
@@ -119,6 +121,14 @@ interface AgentChatProps {
   /** Fires when a turn is sent, with the buffer the agent is about to see. */
   onTurnSent: (code: string) => void
   onStreamingChange: (streaming: boolean) => void
+  /**
+   * Context the user pointed at with `@`, or that the editor handed over from
+   * its selection toolbar. Cleared by the page once the turn is sent.
+   */
+  mentions: Mention[]
+  onMentionsChange: (mentions: Mention[]) => void
+  /** Everything the `@` picker can offer right now. */
+  mentionOptions: Mention[]
   className?: string
 }
 
@@ -133,6 +143,9 @@ export function AgentChat({
   getManualEdits,
   onTurnSent,
   onStreamingChange,
+  mentions,
+  onMentionsChange,
+  mentionOptions,
   className,
 }: AgentChatProps) {
   const { error: toastError, success } = useToast()
@@ -143,9 +156,11 @@ export function AgentChat({
   const [local, setLocal] = useState<ChatMessage[]>([])
   const [streaming, setStreaming] = useState(false)
   const [failure, setFailure] = useState<string | null>(null)
+  const [mentionQuery, setMentionQuery] = useState<{ query: string; start: number } | null>(null)
 
   const abortRef = useRef<AbortController | null>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
+  const inputRef = useRef<HTMLTextAreaElement>(null)
   const lastSentRef = useRef<string>('')
 
   const { records: chats, status: chatsStatus } = useQuery<AiChatData>('ai-chats', {
@@ -215,7 +230,14 @@ export function AgentChat({
       onDraftChange('')
       lastSentRef.current = message
 
-      const content = composeUserContent(message, code, language, getManualEdits())
+      const content = composeUserContent(
+        message,
+        code,
+        language,
+        getManualEdits(),
+        mentions.map((mention) => mention.payload),
+      )
+      onMentionsChange([])
       onTurnSent(code)
       const userMessageId = `umsg-${crypto.randomUUID()}`
       const assistantPlaceholderId = `local-asst-${crypto.randomUUID()}`
@@ -326,8 +348,10 @@ export function AgentChat({
       code,
       getManualEdits,
       language,
+      mentions,
       modelId,
       onDraftChange,
+      onMentionsChange,
       onTurnSent,
       patchAssistant,
       streaming,
@@ -368,12 +392,66 @@ export function AgentChat({
 
   const handleKeyDown = useCallback(
     (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
+      // The picker stops propagation for the keys it owns, so anything that
+      // reaches here is a normal composer keystroke.
       if (event.key === 'Enter' && !event.shiftKey) {
         event.preventDefault()
         void send(draft)
       }
     },
     [draft, send],
+  )
+
+  /**
+   * Track the `@` token under the caret so the picker can open, filter, and
+   * close as the user types.
+   */
+  const syncMentionQuery = useCallback(
+    (value: string, caret: number) => {
+      setMentionQuery(findMentionQuery(value, caret))
+    },
+    [],
+  )
+
+  const handleDraftChange = useCallback(
+    (event: React.ChangeEvent<HTMLTextAreaElement>) => {
+      const value = event.target.value
+      onDraftChange(value)
+      syncMentionQuery(value, event.target.selectionStart)
+    },
+    [onDraftChange, syncMentionQuery],
+  )
+
+  /** Replace the `@query` span with the mention's token and keep the payload. */
+  const insertMention = useCallback(
+    (mention: Mention) => {
+      const caret = inputRef.current?.selectionStart ?? draft.length
+      const span = mentionQuery ?? findMentionQuery(draft, caret)
+      const start = span?.start ?? caret
+      const end = caret
+      const next = `${draft.slice(0, start)}${mention.token} ${draft.slice(end)}`
+      onDraftChange(next)
+      onMentionsChange([...mentions, mention])
+      setMentionQuery(null)
+
+      // Put the caret after the inserted token once React has re-rendered.
+      const caretAfter = start + mention.token.length + 1
+      requestAnimationFrame(() => {
+        const node = inputRef.current
+        if (!node) return
+        node.focus()
+        node.selectionStart = caretAfter
+        node.selectionEnd = caretAfter
+      })
+    },
+    [draft, mentionQuery, mentions, onDraftChange, onMentionsChange],
+  )
+
+  const removeMention = useCallback(
+    (id: string) => {
+      onMentionsChange(mentions.filter((mention) => mention.id !== id))
+    },
+    [mentions, onMentionsChange],
   )
 
   const outOfCredits = credits !== undefined && credits <= 0
@@ -502,17 +580,53 @@ export function AgentChat({
       )}
 
       <div className="border-t border-border p-3">
-        <div className="flex items-end gap-2">
+        {mentions.length > 0 && (
+          <ul data-testid="agent-mentions" className="mb-2 flex flex-wrap gap-1.5">
+            {mentions.map((mention) => (
+              <li key={mention.id}>
+                <Badge variant="secondary" size="sm" className="gap-1 pr-1 font-mono">
+                  {mention.token}
+                  <button
+                    type="button"
+                    onClick={() => removeMention(mention.id)}
+                    aria-label={`Remove ${mention.label}`}
+                    className="rounded-sm p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground"
+                  >
+                    <X className="size-3" aria-hidden />
+                  </button>
+                </Badge>
+              </li>
+            ))}
+          </ul>
+        )}
+
+        <div className="relative flex items-end gap-2">
+          {mentionQuery && (
+            <MentionPicker
+              options={mentionOptions}
+              query={mentionQuery.query}
+              onSelect={insertMention}
+              onClose={() => setMentionQuery(null)}
+            />
+          )}
           <Textarea
+            ref={inputRef}
             data-testid="agent-chat-input"
             aria-label="Message the agent"
             value={draft}
-            onChange={(event) => onDraftChange(event.target.value)}
+            onChange={handleDraftChange}
             onKeyDown={handleKeyDown}
+            onKeyUp={(event) =>
+              syncMentionQuery(event.currentTarget.value, event.currentTarget.selectionStart)
+            }
+            onClick={(event) =>
+              syncMentionQuery(event.currentTarget.value, event.currentTarget.selectionStart)
+            }
+            onBlur={() => setMentionQuery(null)}
             placeholder={
               outOfCredits
                 ? 'You are out of credits — top up to keep chatting.'
-                : 'Ask the agent to refactor, fix, or explain your code…'
+                : 'Ask the agent to refactor, fix, or explain your code…  Type @ for context'
             }
             rows={3}
             disabled={outOfCredits}
@@ -542,7 +656,8 @@ export function AgentChat({
           )}
         </div>
         <p className="mt-2 text-[11px] text-muted-foreground">
-          Enter to send · Shift+Enter for a new line · each turn spends credits
+          Enter to send · Shift+Enter for a new line · <AtSign className="inline size-3" aria-hidden />{' '}
+          for context · each turn spends credits
         </p>
       </div>
     </section>

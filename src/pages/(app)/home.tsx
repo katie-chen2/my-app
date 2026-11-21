@@ -13,19 +13,39 @@
  *    buffer the agent last saw. At send time the difference between that and
  *    the live buffer is attached to the turn, so the model knows what the user
  *    changed by hand and can preserve it instead of regenerating over it.
+ * 3. **Context is explicit.** Selecting code raises a toolbar that turns the
+ *    selection into an `@` mention carrying the text, its line numbers, and
+ *    the file name. The composer can also mention the whole file, any symbol
+ *    in it, or pasted terminal output.
  *
  * Sign-in is required: the agent routes reject anonymous callers with 401, and
  * credits are per-account.
  */
 
-import { useCallback, useRef, useState } from 'react'
+import { useCallback, useMemo, useRef, useState } from 'react'
 import { useAuthProfileReady } from 'deepspace'
 import { Code2, LogIn } from 'lucide-react'
 import { EmptyState } from '@/components/ui'
 import { AgentChat } from '@/components/workspace/AgentChat'
 import { CodeEditor, STARTER_CODE, type Language } from '@/components/workspace/CodeEditor'
 import { describeManualEdits, type CodeProposal } from '@/components/workspace/diff'
+import {
+  extractSymbols,
+  fileMention,
+  selectionMention,
+  symbolMention,
+  type Mention,
+  type SelectionContext,
+} from '@/components/workspace/mentions'
+import type { SelectionAction } from '@/components/workspace/SelectionToolbar'
 import { APP_NAME } from '@/constants'
+
+/** The prompts the selection toolbar drops into the composer. */
+const SELECTION_PROMPTS: Record<SelectionAction, string> = {
+  ask: 'What does this do, and how would you improve it?',
+  refactor: 'Refactor this. Keep the behaviour identical.',
+  explain: 'Explain this step by step.',
+}
 
 export default function HomePage() {
   const { isLoaded, isSignedIn, user } = useAuthProfileReady({ requireUser: true })
@@ -35,6 +55,7 @@ export default function HomePage() {
   const [draft, setDraft] = useState('')
   const [streaming, setStreaming] = useState(false)
   const [proposal, setProposal] = useState<CodeProposal | null>(null)
+  const [mentions, setMentions] = useState<Mention[]>([])
 
   /**
    * The buffer the agent last saw. Kept in a ref because it is read at send
@@ -99,6 +120,51 @@ export default function HomePage() {
     setDraft('Review this code and suggest improvements.')
   }, [])
 
+  /** A stable name for the buffer, derived from the language. */
+  const fileName = useMemo(() => {
+    const extension: Record<string, string> = {
+      typescript: 'ts',
+      javascript: 'js',
+      tsx: 'tsx',
+      jsx: 'jsx',
+      python: 'py',
+      go: 'go',
+      rust: 'rs',
+      java: 'java',
+      css: 'css',
+      html: 'html',
+      json: 'json',
+      sql: 'sql',
+    }
+    return `editor.${extension[language] ?? 'txt'}`
+  }, [language])
+
+  /**
+   * The selection toolbar's handoff: turn the selected range into a mention and
+   * drop a matching prompt into the composer, so the user only has to press
+   * Enter.
+   */
+  const handleSelectionAction = useCallback(
+    (action: SelectionAction, selection: SelectionContext) => {
+      const mention = selectionMention(selection)
+      setMentions((prev) => [...prev, mention])
+      setDraft((prev) => {
+        const prompt = SELECTION_PROMPTS[action]
+        return prev.trim() ? `${prev.trim()} ${prompt}` : prompt
+      })
+    },
+    [],
+  )
+
+  /** Everything the `@` picker can offer: the file, its symbols, the selection. */
+  const mentionOptions = useMemo<Mention[]>(() => {
+    const options: Mention[] = [fileMention(fileName, code, language)]
+    for (const symbol of extractSymbols(code, language)) {
+      options.push(symbolMention(symbol, fileName, language))
+    }
+    return options
+  }, [code, fileName, language])
+
   if (!isLoaded) {
     return <div aria-busy="true" className="h-full bg-background" />
   }
@@ -142,6 +208,9 @@ export default function HomePage() {
           getManualEdits={getManualEdits}
           onTurnSent={handleTurnSent}
           onStreamingChange={setStreaming}
+          mentions={mentions}
+          onMentionsChange={setMentions}
+          mentionOptions={mentionOptions}
           className="min-h-[70vh] lg:min-h-0"
         />
         <CodeEditor
@@ -155,6 +224,8 @@ export default function HomePage() {
           onAcceptProposal={acceptProposal}
           onRejectProposal={rejectProposal}
           onRebaseProposal={rebaseProposal}
+          onSelectionAction={handleSelectionAction}
+          fileName={fileName}
           className="min-h-[60vh] lg:min-h-0"
         />
       </div>

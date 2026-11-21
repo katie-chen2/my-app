@@ -25,7 +25,9 @@ import {
 } from '@/components/ui'
 import { cn } from '@/lib/utils'
 import { DiffView } from './DiffView'
+import { SelectionToolbar, type SelectionAction } from './SelectionToolbar'
 import type { CodeProposal } from './diff'
+import { lineRangeFor, type SelectionContext } from './mentions'
 
 export const LANGUAGES = [
   { value: 'typescript', label: 'TypeScript' },
@@ -75,6 +77,13 @@ interface CodeEditorProps {
   onRejectProposal?: () => void
   /** Re-diff the pending proposal against the buffer as it stands now. */
   onRebaseProposal?: () => void
+  /**
+   * The user picked an action from the selection toolbar. The page turns this
+   * into a mention in the composer, so the selection travels with the message.
+   */
+  onSelectionAction?: (action: SelectionAction, selection: SelectionContext) => void
+  /** Name shown in the selection payload, e.g. `main.ts`. */
+  fileName?: string
   className?: string
 }
 
@@ -89,12 +98,15 @@ export function CodeEditor({
   onAcceptProposal,
   onRejectProposal,
   onRebaseProposal,
+  onSelectionAction,
+  fileName = 'editor',
   className,
 }: CodeEditorProps) {
   const { success } = useToast()
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const gutterRef = useRef<HTMLDivElement>(null)
   const [copied, setCopied] = useState(false)
+  const [selection, setSelection] = useState<{ start: number; end: number } | null>(null)
 
   const lineCount = useMemo(() => value.split('\n').length, [value])
   const lineNumbers = useMemo(
@@ -140,6 +152,34 @@ export function CodeEditor({
       })
     },
     [onChange, value],
+  )
+
+  /**
+   * Read the textarea's selection into state. Called on every interaction that
+   * can move it — mouse, keyboard, and programmatic changes — because a
+   * textarea fires no event for "the selection changed".
+   */
+  const syncSelection = useCallback(() => {
+    const target = textareaRef.current
+    if (!target) return
+    const { selectionStart, selectionEnd } = target
+    if (selectionStart === selectionEnd) {
+      setSelection(null)
+      return
+    }
+    setSelection({ start: selectionStart, end: selectionEnd })
+  }, [])
+
+  const handleSelectionAction = useCallback(
+    (action: SelectionAction) => {
+      if (!selection || !onSelectionAction) return
+      const text = value.slice(selection.start, selection.end)
+      if (!text.trim()) return
+      const { startLine, endLine } = lineRangeFor(value, selection.start, selection.end)
+      onSelectionAction(action, { text, startLine, endLine, fileName, language })
+      setSelection(null)
+    },
+    [fileName, language, onSelectionAction, selection, value],
   )
 
   return (
@@ -271,10 +311,24 @@ export function CodeEditor({
             onChange={(event) => onChange(event.target.value)}
             onKeyDown={handleKeyDown}
             onScroll={syncScroll}
+            onSelect={syncSelection}
+            onMouseUp={syncSelection}
+            onKeyUp={syncSelection}
+            onBlur={() => setSelection(null)}
             placeholder="Paste code here…"
             className="min-h-0 flex-1 resize-none bg-transparent px-3 py-3 font-mono text-xs leading-6 text-foreground outline-none placeholder:text-muted-foreground/60"
           />
         </div>
+      )}
+
+      {selection && !proposal && onSelectionAction && (
+        <SelectionToolbar
+          anchor={textareaRef.current}
+          start={selection.start}
+          end={selection.end}
+          value={value}
+          onAction={handleSelectionAction}
+        />
       )}
     </section>
   )

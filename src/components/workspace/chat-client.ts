@@ -17,24 +17,38 @@ import { decodeAiStreamChunk, getAuthToken, parseSseLine, type AiStreamAction } 
  */
 export const EDITOR_CONTEXT_MARKER = '<<<EDITOR_CONTEXT>>>'
 
+/**
+ * Marks the start of the `@` mention payloads. Same trick as the editor
+ * marker: the model needs the text, the transcript does not.
+ */
+export const MENTION_CONTEXT_MARKER = '<<<MENTION_CONTEXT>>>'
+
 /** Compose the wire payload: the user's words plus the current editor buffer. */
 export function composeUserContent(
   message: string,
   code: string,
   language: string,
   manualEdits?: string | null,
+  mentions?: string[],
 ): string {
-  if (!code.trim()) return message
+  const parts: string[] = [message]
 
-  const parts = [
-    message,
-    '',
-    EDITOR_CONTEXT_MARKER,
-    `The user's current editor content (${language}):`,
-    '```' + language,
-    code,
-    '```',
-  ]
+  // Explicit `@` mentions come first: they are what the user pointed at, so
+  // they should read as the subject of the request rather than an appendix.
+  if (mentions && mentions.length > 0) {
+    parts.push('', MENTION_CONTEXT_MARKER, 'Context the user attached:', ...mentions)
+  }
+
+  if (code.trim()) {
+    parts.push(
+      '',
+      EDITOR_CONTEXT_MARKER,
+      `The user's current editor content (${language}):`,
+      '```' + language,
+      code,
+      '```',
+    )
+  }
 
   // The buffer moved on after the agent last saw it — the user edited it by
   // hand, accepted part of a previous suggestion, or both. Say so explicitly,
@@ -55,9 +69,11 @@ export function composeUserContent(
 
 /** Split a persisted user message back into display text + context flag. */
 export function splitUserContent(content: string): { message: string; hasContext: boolean } {
-  const index = content.indexOf(EDITOR_CONTEXT_MARKER)
-  if (index === -1) return { message: content, hasContext: false }
-  return { message: content.slice(0, index).trimEnd(), hasContext: true }
+  const markers = [EDITOR_CONTEXT_MARKER, MENTION_CONTEXT_MARKER]
+    .map((marker) => content.indexOf(marker))
+    .filter((index) => index !== -1)
+  if (markers.length === 0) return { message: content, hasContext: false }
+  return { message: content.slice(0, Math.min(...markers)).trimEnd(), hasContext: true }
 }
 
 /** A failed chat request, carrying the fields the UI needs to explain itself. */
