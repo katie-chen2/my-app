@@ -34,8 +34,8 @@ Requires Node `>=22.15.0 <23 || >=24 <25 || >=26 <27` and npm `>=11.6.0`.
 ```sh
 npm install
 npx deepspace auth login   # authenticate with app.space
-npm run dev                # vite + miniflare on http://localhost:5173
-npm run deploy             # ship to <name>.app.space
+npx deepspace dev start               # vite + miniflare on http://localhost:5173
+npx deepspace deploy            # ship to <name>.app.space
 ```
 
 Commit before deploying — a release records the current commit and refuses a dirty worktree.
